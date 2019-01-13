@@ -39,10 +39,18 @@ static const char *RcsId = "$Id: HdbConfigurationManager.cpp,v 1.3 2014-03-07 14
 //        (Program Obviously used to Generate tango Object)
 //=============================================================================
 
+#if defined(_WIN32) || defined(WIN32)	// #ifdef _TG_WINDOWS_
+	#include <WinSock2.h>
+	#include <Ws2tcpip.h>
+	#ifdef interface
+		#undef interface
+	#endif
+#else
+	#include <netdb.h> //for getaddrinfo
+#endif
 
 #include <HdbConfigurationManager.h>
 #include <HdbConfigurationManagerClass.h>
-#include <netdb.h> //for getaddrinfo
 
 /*----- PROTECTED REGION END -----*/	//	HdbConfigurationManager.cpp
 
@@ -375,7 +383,11 @@ void HdbConfigurationManager::init_device()
 	}
 	delete db;
 #endif
+#ifdef _TG_WINDOWS_
+	timespec_get(&last_stat, TIME_UTC);
+#else
 	clock_gettime(CLOCK_MONOTONIC,&last_stat);
+#endif
 	/*----- PROTECTED REGION END -----*/	//	HdbConfigurationManager::init_device
 }
 
@@ -504,12 +516,20 @@ void HdbConfigurationManager::always_executed_hook()
 	
 	//	code always executed before all requests
 	timespec now;
+#ifdef _TG_WINDOWS_
+	timespec_get(&last_stat, TIME_UTC);
+#else
 	clock_gettime(CLOCK_MONOTONIC,&now);
+#endif
 	if((now.tv_sec - last_stat.tv_sec + (double)(now.tv_nsec - last_stat.tv_nsec)/1e9) < 2.0)
 	{
 		return;
 	}
+#ifdef _TG_WINDOWS_
+	timespec_get(&last_stat, TIME_UTC);
+#else
 	clock_gettime(CLOCK_MONOTONIC,&last_stat);
+#endif
 	bool archiver_fault = false;
 	for(archiver_map_t::iterator itmap = archiverMap.begin(); itmap != archiverMap.end(); itmap++)
 	{
@@ -3058,7 +3078,7 @@ void HdbConfigurationManager::add_domain(string &str)
 		}
 		string::size_type	end2 = str.find(":", start);
 
-		string th = str.substr(start, end2);
+		string th = str.substr(start, end2-start);
 		string with_domain = str;
 
 		map<string,string>::iterator it_domain = domain_map.find(th);
@@ -3070,6 +3090,16 @@ void HdbConfigurationManager::add_domain(string &str)
 			return;
 		}
 
+		int ret;
+	#ifdef _TG_WINDOWS_
+		WSADATA wsaData;
+		ret = WSAStartup(MAKEWORD(2, 2), &wsaData);
+		if (ret != 0) {
+			cout << __func__ << "WSAStartup failed, error code= : " << ret << endl;
+			return;
+		}
+	#endif
+
 		struct addrinfo hints;
 //		hints.ai_family = AF_INET; // use AF_INET6 to force IPv6
 //		hints.ai_flags = AI_CANONNAME|AI_CANONIDN;
@@ -3078,20 +3108,28 @@ void HdbConfigurationManager::add_domain(string &str)
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_flags = AI_CANONNAME;
 		struct addrinfo *result, *rp;
-		int ret = getaddrinfo(th.c_str(), NULL, &hints, &result);
+		ret = getaddrinfo(th.c_str(), NULL, &hints, &result);
 		if (ret != 0)
 		{
 			cout << __func__<< ": getaddrinfo error='" << gai_strerror(ret)<<"' while looking for " << th<<endl;
+		#ifdef _TG_WINDOWS_
+			WSACleanup();
+		#endif
 			return;
 		}
 
 		for (rp = result; rp != NULL; rp = rp->ai_next)
 		{
+			if(NULL == rp->ai_canonname) // the 2nd addrinfo's ai_canoname is NULL ?
+				break;
 			with_domain = string(rp->ai_canonname) + str.substr(end2);
 			//cout << __func__ <<": found domain -> " << with_domain<<endl;
 			domain_map.insert(make_pair(th, with_domain));
 		}
 		freeaddrinfo(result); // all done with this structure
+	#ifdef _TG_WINDOWS_
+		WSACleanup();
+	#endif
 		str = with_domain;
 		return;
 	}
@@ -3114,6 +3152,17 @@ void HdbConfigurationManager::add_domain(string &str)
 	{
 		string_explode(facility,",",&facilities);
 	}
+
+	int ret;
+#ifdef _TG_WINDOWS_
+	WSADATA wsaData;
+	ret = WSAStartup(MAKEWORD(2, 2), &wsaData);
+	if (ret != 0) {
+		cout << __func__ << "WSAStartup failed, error code= : " << ret << endl;
+		return;
+	}
+#endif
+
 	for(vector<string>::iterator it = facilities.begin(); it != facilities.end(); it++)
 	{
 		string::size_type	end1 = it->find(".");
@@ -3137,7 +3186,7 @@ void HdbConfigurationManager::add_domain(string &str)
 					strresult += ",";
 				continue;
 			}
-			string th = it->substr(start, end2);
+			string th = it->substr(start, end2-start);
 			string port = it->substr(end2);
 			string with_domain = *it;
 
@@ -3160,7 +3209,7 @@ void HdbConfigurationManager::add_domain(string &str)
 			hints.ai_socktype = SOCK_STREAM;
 			hints.ai_flags = AI_CANONNAME;
 			struct addrinfo *result, *rp;
-			int ret = getaddrinfo(th.c_str(), NULL, &hints, &result);
+			ret = getaddrinfo(th.c_str(), NULL, &hints, &result);
 			if (ret != 0)
 			{
 				cout << __func__<< ": getaddrinfo error='" << gai_strerror(ret)<<"' while looking for " << th<<endl;
@@ -3172,6 +3221,8 @@ void HdbConfigurationManager::add_domain(string &str)
 
 			for (rp = result; rp != NULL; rp = rp->ai_next)
 			{
+				if(NULL == rp->ai_canonname) // the 2nd addrinfo's ai_canoname is NULL ?
+					break;
 				with_domain = string(rp->ai_canonname) + it->substr(end2);
 				domain_map.insert(make_pair(th, string(rp->ai_canonname)));
 			}
@@ -3190,6 +3241,9 @@ void HdbConfigurationManager::add_domain(string &str)
 		}
 	}
 	str = strresult;
+#ifdef _TG_WINDOWS_
+	WSACleanup();
+#endif
 }
 #endif
 
